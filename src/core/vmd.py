@@ -3,120 +3,54 @@ import cv2
 import numpy as np
 
 
-def vmd(cap, frames_to_persist, min_size_for_movement, movement_detected_persistence):
-    """
+class VideoMotionDetector:
+    def __init__(self, cap, history=100, min_size_for_movement=100, var_threshold=16, bluring_kernel_size=21,
+                 display_width=500):
+        self.cap = cap
+        self.display_width = display_width
+        self.bluring_kernel_size = bluring_kernel_size
+        self.min_size_for_movement = min_size_for_movement
+        self.back_sub = cv2.createBackgroundSubtractorMOG2(history, var_threshold, False)
 
-    Args:
-        frames_to_persist: Number of frames to pass before changing the frame to compare the current frame against
-        min_size_for_movement: Minimum boxed area for a detected motion to count as actual motion Use to filter out
-            noise or small objects
-        movement_detected_persistence: Minimum length of time where no motion is detected it should take (in program
-            cycles) for the program to declare that there is no movement
+    def run_video_with_detections(self):
+        ret, frame = self.cap.read()
 
-    Returns:
+        while ret:
+            frame = imutils.resize(frame, width=self.display_width)
+            frame, thresh_bgr, fg_mask_bgr, contours = self.get_detections(frame)
+            frame = self.draw_contours_on_image(image=frame, contours=contours)
 
-    """
+            display = np.hstack((thresh_bgr, frame, fg_mask_bgr))
+            cv2.imshow("frame", display)
 
-    # Init frame variables
-    first_frame = None
-    next_frame = None
+            ch = cv2.waitKey(1)
+            if ch & 0xFF == ord('q'):
+                break
 
-    # Init display font and timeout counters
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    delay_counter = 0
-    movement_persistent_counter = 0
+            ret, frame = self.cap.read()
 
-    # LOOP!
-    while True:
+        cv2.destroyAllWindows()
+        self.cap.release()
 
-        # Set transient motion detected as false
-        transient_movement_flag = False
-
-        # Read frame
-        ret, frame = cap.read()
-        text = "Unoccupied"
-
-        # If there's an error in capturing
-        if not ret:
-            print("CAPTURE ERROR")
-            continue
-
-        # Resize and save a greyscale version of the image
-        frame = imutils.resize(frame, width=750)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        # Blur it to remove camera noise (reducing false positives)
-        gray = cv2.GaussianBlur(gray, (21, 21), 0)
-
-        # If the first frame is nothing, initialise it
-        if first_frame is None:
-            first_frame = gray
-
-        delay_counter += 1
-
-        # Otherwise, set the first frame to compare as the previous frame
-        # But only if the counter reaches the appriopriate value
-        # The delay is to allow relatively slow motions to be counted as large
-        # motions if they're spread out far enough
-        if delay_counter > frames_to_persist:
-            delay_counter = 0
-            first_frame = next_frame
-
-        # Set the next frame to compare (the current frame)
-        next_frame = gray
-
-        # Compare the two frames, find the difference
-        frame_delta = cv2.absdiff(first_frame, next_frame)
-        thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
-
-        # Fill in holes via dilate(), and find contours of the thesholds
-        thresh = cv2.dilate(thresh, None, iterations=2)
-        cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        # loop over the contours
-        for c in cnts:
-
-            # Save the coordinates of all found contours
+    @staticmethod
+    def draw_contours_on_image(image, contours, color=(0, 255, 0)):
+        for c in contours:
             (x, y, w, h) = cv2.boundingRect(c)
+            cv2.rectangle(image, (x, y), (x + w, y + h), color, 2)
 
-            # If the contour is too small, ignore it, otherwise, there's transient
-            # movement
-            if cv2.contourArea(c) > min_size_for_movement:
-                transient_movement_flag = True
+        return image
 
-                # Draw a rectangle around big enough movements
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    def get_detections(self, frame):
+        frame_blurred = cv2.GaussianBlur(frame, (self.bluring_kernel_size, self.bluring_kernel_size), 0)
 
-        # The moment something moves momentarily, reset the persistent
-        # movement timer.
-        if transient_movement_flag == True:
-            movement_persistent_flag = True
-            movement_persistent_counter = movement_detected_persistence
+        fg_mask = self.back_sub.apply(frame_blurred)
+        fg_mask_bgr = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
 
-        # As long as there was a recent transient movement, say a movement
-        # was detected
-        if movement_persistent_counter > 0:
-            text = "Movement Detected " + str(movement_persistent_counter)
-            movement_persistent_counter -= 1
-        else:
-            text = "No Movement Detected"
+        thresh = cv2.erode(fg_mask, None)
+        thresh = cv2.dilate(thresh, None, iterations=5)
+        thresh_bgr = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+        contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # Print the text on the screen, and display the raw and processed video
-        # feeds
-        cv2.putText(frame, str(text), (10, 35), font, 0.75, (255, 255, 255), 2, cv2.LINE_AA)
+        contours = [c for c in contours if cv2.contourArea(c) > self.min_size_for_movement]
 
-        # Convert the frame_delta to color for splicing
-        frame_delta = cv2.cvtColor(frame_delta, cv2.COLOR_GRAY2BGR)
-
-        # Splice the two video frames together to make one long horizontal one
-        cv2.imshow("frame", np.hstack((frame_delta, frame)))
-
-        # Interrupt trigger by pressing q to quit the open CV program
-        ch = cv2.waitKey(1)
-        if ch & 0xFF == ord('q'):
-            break
-
-    # Cleanup when closed
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    cap.release()
+        return frame, thresh_bgr, fg_mask_bgr, contours
